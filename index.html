@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gestión Tocadores — Control de ventas y separaciones</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- Banner de modo demostración (visible solo sin credenciales de Supabase) -->
+  <div id="demo-banner" class="demo-banner" hidden>
+    MODO DEMOSTRACIÓN · Los datos se guardan solo en este navegador.
+    Para el modo real con datos compartidos, configura Supabase en <code>js/config.js</code>.
+  </div>
+
+  <!-- ======== VISTA DE INICIO DE SESIÓN ======== -->
+  <section id="view-login" class="login-screen">
+    <div class="login-card">
+      <h1>Gestión Tocadores</h1>
+      <p class="subtitle">Control de separaciones, ventas y ganancias</p>
+
+      <!-- Formulario real (Supabase) -->
+      <form id="login-form" class="login-form" hidden>
+        <label>
+          Correo electrónico
+          <input type="email" id="login-email" required autocomplete="username" />
+        </label>
+        <label>
+          Contraseña
+          <input type="password" id="login-pass" required autocomplete="current-password" />
+        </label>
+        <button type="submit" class="btn btn-primary">Ingresar</button>
+        <p id="login-error" class="error" hidden></p>
+      </form>
+
+      <!-- Acceso simulado en modo demostración -->
+      <div id="login-demo" class="login-form" hidden>
+        <p class="demo-note">Sin credenciales de Supabase, la app funciona en modo demostración con datos locales.</p>
+        <label>
+          Tu correo (opcional, solo para identificar la sesión)
+          <input type="email" id="demo-email" placeholder="dueño@negocio.com" autocomplete="username" />
+        </label>
+        <button id="btn-demo-login" class="btn btn-primary">Entrar en modo demostración</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======== APP ======== -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="topbar-title">
+        <strong>Gestión Tocadores</strong>
+        <span id="session-user" class="session-user"></span>
+      </div>
+      <div class="topbar-actions">
+        <span id="mode-badge" class="mode-badge mode-worker">Trabajadora</span>
+        <button id="btn-owner-toggle" class="btn btn-ghost btn-sm">Modo dueño</button>
+        <button id="btn-logout" class="btn btn-ghost btn-sm">Salir</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button data-tab="resumen" class="tab active">Resumen</button>
+      <button data-tab="ventas" class="tab">Ventas</button>
+      <button data-tab="gastos" class="tab" id="tab-gastos">Gastos</button>
+      <button data-tab="exportar" class="tab">Exportar</button>
+    </nav>
+
+    <main id="view" class="view"></main>
+  </div>
+
+  <!-- Modal genérico -->
+  <div id="modal-backdrop" class="modal-backdrop" hidden>
+    <div id="modal-box" class="modal-box" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Librerías por CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <!-- Configuración: llena SUPABASE_URL y SUPABASE_ANON_KEY para producción -->
+  <script src="js/config.js"></script>
+  <!-- App en módulos ES -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
