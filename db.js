@@ -65,6 +65,17 @@ function createDemoStore() {
           .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
       },
       async create(data) {
+        // Candado de datos: ningún abono puede superar el saldo pendiente.
+        const venta = read("ventas").find((v) => v.id === data.venta_id);
+        if (venta) {
+          const abonado = read("abonos")
+            .filter((a) => a.venta_id === data.venta_id)
+            .reduce((s, a) => s + (Number(a.monto) || 0), 0);
+          const saldo = (Number(venta.precio_venta) || 0) - abonado;
+          if ((Number(data.monto) || 0) - saldo > 0.005) {
+            throw new Error(`El abono supera el saldo pendiente (S/ ${saldo.toFixed(2)}).`);
+          }
+        }
         const row = { id: newId(), created_at: new Date().toISOString(), ...data };
         const all = read("abonos");
         all.push(row);
@@ -158,6 +169,20 @@ function createSupabaseStore(client) {
         return data;
       },
       async create(row) {
+        // Candado de datos: ningún abono puede superar el saldo pendiente.
+        const { data: venta } = await client
+          .from("ventas")
+          .select("precio_venta")
+          .eq("id", row.venta_id)
+          .single();
+        if (venta) {
+          const { data: abs } = await client.from("abonos").select("monto").eq("venta_id", row.venta_id);
+          const abonado = (abs || []).reduce((s, a) => s + (Number(a.monto) || 0), 0);
+          const saldo = (Number(venta.precio_venta) || 0) - abonado;
+          if ((Number(row.monto) || 0) - saldo > 0.005) {
+            throw new Error(`El abono supera el saldo pendiente (S/ ${saldo.toFixed(2)}).`);
+          }
+        }
         const { data, error } = await client.from("abonos").insert(row).select().single();
         if (error) throw error;
         return data;

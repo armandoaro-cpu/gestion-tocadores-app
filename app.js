@@ -546,7 +546,7 @@ async function renderVentaDetalle(id) {
   }
 
   if (v.estado === "activa") {
-    wrap.append(formularioAbono(v));
+    wrap.append(formularioAbono(v, saldo));
   }
 
   // ---- Envío ----
@@ -604,12 +604,13 @@ function infoItem(label, value, full) {
   );
 }
 
-function formularioAbono(v) {
+function formularioAbono(v, saldo) {
   const f = el("form", { class: "form inline-form abono-form" });
   f.innerHTML = `
     <h4>Registrar abono</h4>
+    <p class="muted">Saldo pendiente: <strong>${soles(saldo)}</strong>. El abono no puede superar ese monto.</p>
     <div class="row3">
-      <label>Monto (S/) <input name="monto" type="number" min="0.01" step="0.01" required /></label>
+      <label>Monto (S/) <input name="monto" type="number" min="0.01" step="0.01" max="${saldo.toFixed(2)}" required /></label>
       <label>Fecha <input name="fecha" type="date" value="${hoyISO()}" required /></label>
       <label>Medio
         <select name="medio">
@@ -641,6 +642,24 @@ function formularioAbono(v) {
     e.preventDefault();
     const fd = new FormData(f);
     const medio = fd.get("medio");
+    const monto = Number(fd.get("monto"));
+    // Validación de saldo: un abono nunca puede superar lo que falta pagar.
+    // Se recalcula al momento de guardar, por si hubo cambios recientes.
+    try {
+      const actuales = await S.db.abonos.listByVenta(v.id);
+      const saldoActual = saldoRestante(v, totalAbonado(actuales));
+      if (!(monto > 0)) {
+        formError(f, "Ingresa un monto válido, mayor a cero.");
+        return;
+      }
+      if (monto - saldoActual > 0.005) {
+        formError(f, `El abono de ${soles(monto)} supera el saldo pendiente de ${soles(saldoActual)}. Lo máximo que se puede registrar es el saldo.`);
+        return;
+      }
+    } catch (err) {
+      formError(f, "No se pudo verificar el saldo: " + err.message);
+      return;
+    }
     const file = fd.get("comprobante");
     if (medio !== "efectivo" && (!file || file.size === 0)) {
       formError(f, "Debes subir la imagen del comprobante para Yape o Transferencia.");
@@ -659,7 +678,7 @@ function formularioAbono(v) {
       const creado = await S.db.abonos.create({
         venta_id: v.id,
         fecha: fd.get("fecha"),
-        monto: Number(fd.get("monto")),
+        monto,
         medio,
         comprobante,
       });
