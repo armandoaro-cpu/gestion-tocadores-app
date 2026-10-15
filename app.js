@@ -8,6 +8,7 @@ import {
   soles, fmtFecha, hoyISO, rangoMes, rangoSemana, el, toast, openModal,
   formError, comprimirImagen, TIPOS_VENTA, ESTADOS, MEDIOS,
   CATEGORIAS_GASTO, totalAbonado, saldoRestante, porcentajeAvance,
+  enlaceWhatsApp, mensajeEstadoWhatsApp,
 } from "./ui.js";
 import { exportarExcel } from "./export.js";
 
@@ -199,7 +200,10 @@ async function renderResumen() {
     (v) => (v.fecha || "").slice(0, 10) >= from && (v.fecha || "").slice(0, 10) <= to && v.estado !== "anulada"
   );
   let cobrado = 0;
-  for (const v of await S.db.ventas.list()) {
+  const todasVentas = await S.db.ventas.list();
+  const idsAnuladas = new Set(todasVentas.filter((v) => v.estado === "anulada").map((v) => v.id));
+  for (const v of todasVentas) {
+    if (idsAnuladas.has(v.id)) continue; // lo abonado en anuladas se devolvió: no cuenta como cobrado
     for (const a of await S.db.abonos.listByVenta(v.id)) {
       const f = (a.fecha || "").slice(0, 10);
       if (f >= from && f <= to) cobrado += Number(a.monto) || 0;
@@ -231,10 +235,10 @@ async function renderResumen() {
       el("div", { class: "cards" },
         card("Ganancia bruta", soles(gananciaBruta), `de ${conCosto.length} ventas con costo cargado`),
         card("Gastos del mes", soles(totalGastos)),
-        el("div", { class: "card " + (neto >= 0 ? "card-ok" : "card-bad") },
+        el("div", { class: "card " + (neto > 0 ? "card-ok" : neto < 0 ? "card-bad" : "") },
           el("div", { class: "card-label", text: "Resultado neto del mes" }),
           el("div", { class: "card-value", text: soles(neto) }),
-          el("div", { class: "card-sub", text: neto >= 0 ? "GANANCIA" : "PÉRDIDA" }))
+          el("div", { class: "card-sub", text: neto > 0 ? "GANANCIA" : neto < 0 ? "PÉRDIDA" : "EN CERO / SIN RESULTADO" }))
       )
     );
 
@@ -326,6 +330,7 @@ async function renderVentas() {
       const abs = await S.db.abonos.listByVenta(v.id);
       const ab = totalAbonado(abs);
       const saldo = saldoRestante(v, ab);
+      const waLink = enlaceWhatsApp(v.telefono);
       ul.append(el("li", { class: "sale-card" },
         el("button", { class: "sale-main", onclick: () => { S.ventaId = v.id; render(); } },
           el("div", { class: "sale-top" },
@@ -334,7 +339,10 @@ async function renderVentas() {
           el("div", { class: "sale-sub" },
             `${TIPOS_VENTA[v.tipo] || ""} · ${soles(v.precio_venta)} · saldo ${soles(saldo)}`),
           el("div", { class: "sale-sub muted" }, fmtFecha(v.fecha) + (v.modelo ? " · " + v.modelo : ""))
-        )
+        ),
+        waLink
+          ? el("a", { class: "wa-chip", href: waLink, target: "_blank", rel: "noopener" }, "Abrir WhatsApp de la clienta")
+          : null
       ));
     }
     wrap.append(ul);
@@ -525,6 +533,16 @@ async function renderVentaDetalle(id) {
   );
   wrap.append(prog);
   wrap.append(el("p", { class: "muted" }, `Abonado: ${soles(abonado)} · Saldo restante: ${soles(saldo)} · Avance: ${pct}%`));
+
+  // Botón de WhatsApp con el estado de cuenta listo para enviar a la clienta.
+  if (v.estado !== "anulada") {
+    const waEstado = enlaceWhatsApp(v.telefono, mensajeEstadoWhatsApp(v, abonado));
+    if (waEstado) {
+      wrap.append(el("a", {
+        class: "btn btn-whatsapp", href: waEstado, target: "_blank", rel: "noopener",
+      }, "Enviar estado de cuenta por WhatsApp"));
+    }
+  }
 
   if (abonos.length) {
     const ul = el("ul", { class: "list" });

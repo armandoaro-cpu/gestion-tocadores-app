@@ -163,3 +163,33 @@ export function porcentajeAvance(venta, abonado) {
   if (p <= 0) return 0;
   return Math.min(100, Math.round((abonado / p) * 100));
 }
+
+/**
+ * Enlace de WhatsApp (wa.me) para un teléfono peruano.
+ * Acepta números con espacios, con +51 o solo los 9 dígitos.
+ * Si se pasa mensaje, va pre-cargado en el chat. Devuelve null si no hay número válido.
+ */
+export function enlaceWhatsApp(telefono, mensaje) {
+  let n = String(telefono || "").replace(/\D/g, "");
+  if (!n) return null;
+  if (n.length === 9) n = "51" + n; // celular peruano sin código de país
+  if (n.length < 11) return null;
+  const base = `https://wa.me/${n}`;
+  return mensaje ? `${base}?text=${encodeURIComponent(mensaje)}` : base;
+}
+
+/** Mensaje listo para enviar al cliente con su estado de cuenta (abonado y saldo). */
+export function mensajeEstadoWhatsApp(venta, abonado) {
+  const saldo = saldoRestante(venta, abonado);
+  const lineas = [
+    `Hola, ${venta.nombre || "gracias por tu compra"}. Te compartimos el estado de tu compra:`,
+    `• Tocador: ${venta.modelo || "—"}`,
+    `• Precio total: ${soles(venta.precio_venta)}`,
+    `• Abonado: ${soles(abonado)}`,
+    `• Saldo pendiente: ${soles(saldo)}`,
+    saldo <= 0
+      ? "Tu tocador ya está pagado por completo. ¡Gracias por tu compra!"
+      : "Quedamos atentos a tu próximo abono. ¡Gracias por tu compra!",
+  ];
+  return lineas.join("\n");
+}
