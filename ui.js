@@ -225,19 +225,18 @@ export function extraerEnteroZona(texto) {
   return n > 0 && n <= 999999 ? n : null;
 }
 
-/** Recorta la franja de los dígitos del monto (zona tipo Yape) y la prepara en blanco/negro. */
-async function recorteZonaDigitos(url) {
+/** Recorta una franja relativa de la imagen y la prepara en blanco/negro ampliada. */
+async function recorteFranja(url, x, y, w, h, escala) {
   const img = await new Promise((res, rej) => {
     const i = new Image();
     i.onload = () => res(i);
     i.onerror = rej;
     i.src = url;
   });
-  const sx = img.naturalWidth * 0.10;
-  const sy = img.naturalHeight * 0.26;
-  const sw = img.naturalWidth * 0.50;
-  const sh = img.naturalHeight * 0.16;
-  const escala = 3;
+  const sx = img.naturalWidth * x;
+  const sy = img.naturalHeight * y;
+  const sw = img.naturalWidth * w;
+  const sh = img.naturalHeight * h;
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(sw * escala));
   canvas.height = Math.max(1, Math.round(sh * escala));
@@ -255,8 +254,14 @@ async function recorteZonaDigitos(url) {
 }
 
 /**
- * Intenta leer el monto de la imagen del comprobante.
- * Devuelve el monto (número) o null si no se pudo leer. Nunca lanza por lectura fallida.
+ * Intenta leer el monto de la imagen del comprobante, en pasadas:
+ *  1) Texto completo -> monto con decimales (transferencias BCP y similares).
+ *  2) Banda central ampliada -> monto con decimales (Plin/BBVA y similares,
+ *     cuyo importe el lector pierde en la página completa).
+ *  3) Si parece Yape: dos recortes distintos de SOLO los dígitos deben
+ *     coincidir; si no coinciden, no se sugiere nada (un monto dudoso es
+ *     peor que ninguno: la persona lo escribe a mano).
+ * Devuelve el monto (número) o null. Nunca lanza por lectura fallida.
  */
 export async function leerMontoComprobante(file) {
   if (typeof window === "undefined" || !window.Tesseract || !file) return null;
@@ -265,22 +270,28 @@ export async function leerMontoComprobante(file) {
   try {
     url = URL.createObjectURL(file);
     worker = await window.Tesseract.createWorker("spa");
-    await worker.setParameters({ tessedit_pageseg_mode: "11" });
-    const completo = await worker.recognize(url);
-    const textoCompleto = completo?.data?.text || "";
+    const leer = async (imagen, psm, whitelist) => {
+      const params = { tessedit_pageseg_mode: psm };
+      if (whitelist) params.tessedit_char_whitelist = whitelist;
+      await worker.setParameters(params);
+      const r = await worker.recognize(imagen);
+      return r?.data?.text || "";
+    };
+    const textoCompleto = await leer(url, "11", null);
     const decimal = extraerMontoDecimal(textoCompleto);
     if (decimal != null) return decimal;
-    // Solo si parece de Yape se intenta la zona de dígitos enteros.
+    const banda = await recorteFranja(url, 0.04, 0.14, 0.92, 0.38, 2);
+    if (banda) {
+      const decimalBanda = extraerMontoDecimal(await leer(banda, "6", null));
+      if (decimalBanda != null) return decimalBanda;
+    }
     if (/yape/i.test(textoCompleto)) {
-      const zona = await recorteZonaDigitos(url);
-      if (zona) {
-        await worker.setParameters({
-          tessedit_pageseg_mode: "8",
-          tessedit_char_whitelist: "0123456789.,",
-        });
-        const lectura = await worker.recognize(zona);
-        return extraerEnteroZona(lectura?.data?.text || "");
-      }
+      const zonaA = await recorteFranja(url, 0.125, 0.28, 0.42, 0.12, 3);
+      const intA = zonaA ? extraerEnteroZona(await leer(zonaA, "8", "0123456789.,")) : null;
+      const zonaB = await recorteFranja(url, 0.14, 0.29, 0.38, 0.10, 3);
+      const intB = zonaB ? extraerEnteroZona(await leer(zonaB, "7", "0123456789.,")) : null;
+      if (intA != null && intA === intB) return intA;
+      return null;
     }
     return null;
   } catch {
