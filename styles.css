@@ -287,6 +287,10 @@ input:focus, select:focus, textarea:focus {
 .badge-anulada { background: #f5f5f4; color: #57534e; border-color: #d6d3d1; }
 
 .ventas-resultados { display: grid; gap: 0.9rem; }
+.card-progress { margin-top: 0.55rem; }
+.fecha-row { align-items: center; }
+.fecha-label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 600; flex: 1; }
+.fecha-label .search-input { flex: 1; }
 .search-row { display: flex; gap: 0.6rem; }
 .search-row .search-input { flex: 1; border-radius: var(--radius-sm); }
 .search-row select { width: auto; border-radius: var(--radius-sm); }

@@ -51,12 +51,16 @@ export async function exportarExcel({ db, esDueno, from, to, etiquetaPeriodo }) 
   });
 
   // Abonos del periodo (por fecha de abono) y gastos del periodo
+  // Ojo: lo abonado en ventas anuladas se devolvió, así que NO suma al cobrado.
+  const idsAnuladas = new Set(ventas.filter((v) => v.estado === "anulada").map((v) => v.id));
+  let totalCobradoReal = 0;
   const abonosRows = [];
   for (const v of ventas) {
     const abs = await db.abonos.listByVenta(v.id);
     for (const a of abs) {
       const f = (a.fecha || "").slice(0, 10);
       if ((!from || f >= from) && (!to || f <= to)) {
+        if (!idsAnuladas.has(v.id)) totalCobradoReal += Number(a.monto) || 0;
         abonosRows.push({
           Fecha: fmtFecha(a.fecha),
           Cliente: v.nombre || "",
@@ -90,7 +94,7 @@ export async function exportarExcel({ db, esDueno, from, to, etiquetaPeriodo }) 
   window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(abonosRows), "Abonos");
   if (esDueno) {
     window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(gastosRows), "Gastos");
-    const totalCobrado = abonosRows.reduce((s, r) => s + r.Monto, 0);
+    const totalCobrado = totalCobradoReal;
     const totalGastos = gastosRows.reduce((s, r) => s + r.Monto, 0);
     const ganancia = ventasRows.reduce((s, r) => s + (Number(r["Ganancia estimada"]) || 0), 0);
     const resumen = [

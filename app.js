@@ -24,11 +24,27 @@ const S = {
   ventaId: null,
   mes: hoyISO().slice(0, 7),
   busqueda: "",
+  filtroFecha: "",
   filtroEstado: "",
 };
 
 function norm(t) {
-  return (t || "").toString().toLowerCase().trim();
+  // Minúsculas y sin tildes: "maria" encuentra "María".
+  return (t || "").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+}
+
+/**
+ * Mantiene el estado de una separación sincronizado con su saldo:
+ * saldo 0 -> "pagada"; con saldo -> "activa". No toca directa/enviada/anulada.
+ */
+async function sincronizarEstadoPagada(v, abonado) {
+  if (v.tipo !== "separacion") return;
+  if (v.estado !== "activa" && v.estado !== "pagada") return;
+  const correcto = saldoRestante(v, abonado) <= 0 ? "pagada" : "activa";
+  if (correcto !== v.estado) {
+    await S.db.ventas.update(v.id, { estado: correcto });
+    v.estado = correcto;
+  }
 }
 
 /* ---------------- Sesión ---------------- */
@@ -312,24 +328,35 @@ async function renderVentas() {
     const todas = await S.db.ventas.list();
     if (token !== ventasToken) return; // ya hay una búsqueda más nueva en curso
     const q = norm(S.busqueda);
+    const qDig = q.replace(/\D/g, "");
     const filtradas = todas.filter((v) => {
       if (S.filtroEstado && v.estado !== S.filtroEstado) return false;
+      if (S.filtroFecha && (v.fecha || "").slice(0, 10) !== S.filtroFecha) return false;
       if (!q) return true;
-      return [v.nombre, v.telefono, v.dni].some((x) => norm(x).includes(q));
+      if (norm(v.nombre).includes(q)) return true;
+      // Teléfono/DNI: también calza comparando solo dígitos (con o sin espacios/guiones).
+      if (qDig.length >= 3 && [v.telefono, v.dni].some((x) => String(x || "").replace(/\D/g, "").includes(qDig))) return true;
+      return [v.telefono, v.dni].some((x) => norm(x).includes(q));
     });
 
     resultados.innerHTML = "";
     if (!filtradas.length) {
-      resultados.append(el("p", { class: "muted", text: "No hay registros. Toca «+ Nueva» para registrar la primera venta o separación." }));
+      resultados.append(el("p", { class: "muted", text: "No hay registros con esos criterios. Ajusta la búsqueda o toca «+ Nueva» para registrar una venta o separación." }));
       return;
     }
+    // Conteo de lo mostrado (con fecha elegida: cuántas ventas se hicieron ese día).
+    const totalFiltrado = filtradas.reduce((s, v) => s + (Number(v.precio_venta) || 0), 0);
+    resultados.append(el("p", { class: "muted" },
+      `${filtradas.length} venta(s)${S.filtroFecha ? " del " + fmtFecha(S.filtroFecha) : ""} · Total ${soles(totalFiltrado)}`));
     const ul = el("ul", { class: "list list-cards" });
     for (const v of filtradas) {
       const abs = await S.db.abonos.listByVenta(v.id);
       if (token !== ventasToken) return;
       const ab = totalAbonado(abs);
+      await sincronizarEstadoPagada(v, ab);
       const saldo = saldoRestante(v, ab);
-      const waLink = enlaceWhatsApp(v.telefono);
+      const pct = porcentajeAvance(v, ab);
+      const waLink = v.estado !== "anulada" ? enlaceWhatsApp(v.telefono) : null;
       ul.append(el("li", { class: "sale-card" },
         el("button", { class: "sale-main", onclick: () => { S.ventaId = v.id; render(); } },
           el("div", { class: "sale-top" },
@@ -337,7 +364,10 @@ async function renderVentas() {
             el("span", { class: "badge badge-" + v.estado }, ESTADOS[v.estado] || v.estado)),
           el("div", { class: "sale-sub" },
             `${TIPOS_VENTA[v.tipo] || ""} · ${soles(v.precio_venta)} · saldo ${soles(saldo)}`),
-          el("div", { class: "sale-sub muted" }, fmtFecha(v.fecha) + (v.modelo ? " · " + v.modelo : ""))
+          el("div", { class: "sale-sub muted" }, fmtFecha(v.fecha) + (v.modelo ? " · " + v.modelo : "")),
+          el("div", { class: "progress card-progress" },
+            el("div", { class: "progress-bar", style: `width:${pct}%` })),
+          el("div", { class: "sale-sub muted" }, `Abonado ${soles(ab)} · ${pct}%`)
         ),
         waLink
           ? el("a", { class: "wa-chip", href: waLink, target: "_blank", rel: "noopener" }, "Abrir WhatsApp de la clienta")
@@ -359,6 +389,22 @@ async function renderVentas() {
     )
   );
   wrap.append(searchRow);
+
+  // Filtro por fecha: muestra solo las ventas de ese día (y el conteo lo dice).
+  const fechaRow = el("div", { class: "search-row fecha-row" },
+    el("label", { class: "fecha-label" }, "Fecha:",
+      el("input", {
+        type: "date", value: S.filtroFecha, class: "search-input",
+        oninput: (e) => { S.filtroFecha = e.target.value; pintarResultados(); },
+      })),
+    S.filtroFecha
+      ? el("button", {
+          class: "btn btn-ghost btn-sm", type: "button",
+          onclick: () => render(),
+        }, "Ver todas las fechas")
+      : null
+  );
+  wrap.append(fechaRow);
   wrap.append(resultados);
   view().append(wrap);
   pintarResultados();
@@ -441,9 +487,10 @@ const modalEditarVenta = requiereDueno(async (venta) => {
   f.innerHTML = `
     <h3>Editar venta / separación</h3>
     <label>Nombre del cliente <input name="nombre" required maxlength="120" value="${esc(venta.nombre)}" /></label>
-    <div class="row2">
+    <div class="row3">
       <label>DNI <input name="dni" maxlength="20" value="${esc(venta.dni)}" /></label>
       <label>Teléfono <input name="telefono" required maxlength="30" value="${esc(venta.telefono)}" /></label>
+      <label>Fecha <input name="fecha" type="date" required value="${(venta.fecha || "").slice(0, 10)}" /></label>
     </div>
     <label>Modelo del tocador
       <textarea name="modelo" rows="3" required>${esc(venta.modelo)}</textarea>
@@ -474,6 +521,7 @@ const modalEditarVenta = requiereDueno(async (venta) => {
       nombre: fd.get("nombre").trim(),
       dni: fd.get("dni").trim(),
       telefono: fd.get("telefono").trim(),
+      fecha: fd.get("fecha"),
       modelo: fd.get("modelo").trim(),
       precio_venta: Number(fd.get("precio_venta")) || 0,
       destino_tipo: fd.get("destino_tipo"),
@@ -481,7 +529,16 @@ const modalEditarVenta = requiereDueno(async (venta) => {
       costo: fd.get("costo") === "" ? null : Number(fd.get("costo")),
     };
     try {
+      // El precio no puede quedar por debajo de lo que el cliente ya abonó.
+      const absPrevios = await S.db.abonos.listByVenta(venta.id);
+      const abonadoPrevio = totalAbonado(absPrevios);
+      if (patch.precio_venta < abonadoPrevio - 0.005) {
+        formError(f, `El precio (S/ ${patch.precio_venta.toFixed(2)}) no puede ser menor a lo ya abonado (${soles(abonadoPrevio)}).`);
+        return;
+      }
       await S.db.ventas.update(venta.id, patch);
+      const actualizada = { ...venta, ...patch };
+      await sincronizarEstadoPagada(actualizada, abonadoPrevio);
       close();
       toast("Cambios guardados");
       render();
@@ -508,6 +565,7 @@ async function renderVentaDetalle(id) {
   const abonado = totalAbonado(abonos);
   const saldo = saldoRestante(v, abonado);
   const pct = porcentajeAvance(v, abonado);
+  await sincronizarEstadoPagada(v, abonado);
   const pagadoCompleto = v.tipo === "directa" || saldo <= 0;
 
   wrap.append(el("button", { class: "btn btn-ghost btn-sm", onclick: () => { S.ventaId = null; render(); } }, "← Volver"));
@@ -722,6 +780,9 @@ function formularioAbono(v, saldo) {
           await S.supabase.from("abonos").update({ comprobante: path }).eq("id", creado.id);
         } catch { /* se conserva el archivo temporal */ }
       }
+      // Si con este abono se completó el precio, la separación pasa a "pagada".
+      const absActuales = await S.db.abonos.listByVenta(v.id);
+      await sincronizarEstadoPagada(v, totalAbonado(absActuales));
       toast("Abono registrado");
       render();
     } catch (err) {
@@ -741,6 +802,9 @@ const borrarAbono = requiereDueno(async (venta, abono) => {
       el("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancelar"),
       el("button", { class: "btn btn-danger", onclick: async () => {
         await S.db.abonos.remove(abono.id);
+        // Si vuelve a quedar saldo, una "pagada" regresa a "activa".
+        const absRestantes = await S.db.abonos.listByVenta(venta.id);
+        await sincronizarEstadoPagada(venta, totalAbonado(absRestantes));
         close();
         toast("Abono borrado");
         render();
