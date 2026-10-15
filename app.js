@@ -412,6 +412,12 @@ async function renderVentas() {
 
 /* ---------------- Nueva / editar venta ---------------- */
 
+function limitarDigitos(input, max) {
+  input.addEventListener("input", () => {
+    input.value = input.value.replace(/\D/g, "").slice(0, max);
+  });
+}
+
 function modalNuevaVenta() {
   const f = el("form", { class: "form" });
   f.innerHTML = `
@@ -429,8 +435,8 @@ function modalNuevaVenta() {
     </div>
     <label>Nombre del cliente <input name="nombre" required maxlength="120" /></label>
     <div class="row2">
-      <label>DNI <input name="dni" maxlength="20" inputmode="numeric" /></label>
-      <label>Teléfono <input name="telefono" required maxlength="30" inputmode="tel" /></label>
+      <label>DNI (8 dígitos) <input name="dni" maxlength="8" inputmode="numeric" placeholder="Ej.: 76219990" /></label>
+      <label>Teléfono (9 dígitos) <input name="telefono" required maxlength="9" inputmode="numeric" placeholder="Ej.: 987654321" /></label>
     </div>
     <label>Modelo del tocador (escríbelo libremente)
       <textarea name="modelo" rows="3" placeholder="Ej.: tocador con espejo redondo, luces y 3 cajones" required></textarea>
@@ -446,23 +452,88 @@ function modalNuevaVenta() {
     </div>
     <label>Distrito / departamento <input name="destino_lugar" maxlength="120" placeholder="Ej.: Los Olivos / Arequipa" /></label>
     ${ownerActivo() ? `<label>Costo del tocador — proveedor (S/) <input name="costo" type="number" min="0" step="0.01" /></label>` : `<p class="muted">Costo: pendiente — solo dueño</p>`}
+    <h4>Abono inicial (obligatorio)</h4>
+    <div class="row3">
+      <label>Fecha del abono <input type="date" name="abono_fecha" value="${hoyISO()}" required /></label>
+      <label>Monto del abono (S/) <input name="abono_monto" type="number" min="0" step="0.01" required /></label>
+      <label>Medio de pago
+        <select name="abono_medio">
+          ${Object.entries(MEDIOS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    <label class="file-label">Comprobante (foto o captura) <span class="req" id="abono-req">*</span>
+      <input type="file" name="abono_comprobante" accept="image/*" />
+    </label>
+    <p class="muted" id="abono-nota">Obligatorio cuando el pago es por Yape o transferencia. En efectivo no se pide.</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="cancel">Cancelar</button>
-      <button type="submit" class="btn btn-primary">Guardar</button>
+      <button type="submit" class="btn btn-primary">Guardar venta y abono</button>
     </div>`;
   const close = openModal(f);
   f.querySelector("#cancel").onclick = close;
+
+  const tipoSel = f.querySelector('select[name="tipo"]');
+  const precioInp = f.querySelector('input[name="precio_venta"]');
+  const montoInp = f.querySelector('input[name="abono_monto"]');
+  const medioSel = f.querySelector('select[name="abono_medio"]');
+  const fileInp = f.querySelector('input[name="abono_comprobante"]');
+  limitarDigitos(f.querySelector('input[name="dni"]'), 8);
+  limitarDigitos(f.querySelector('input[name="telefono"]'), 9);
+
+  // Venta directa: el abono inicial es el pago completo (se llena solo).
+  const sincronizarDirecta = () => {
+    if (tipoSel.value === "directa") {
+      montoInp.value = precioInp.value || "";
+      montoInp.readOnly = true;
+    } else {
+      montoInp.readOnly = false;
+    }
+  };
+  tipoSel.addEventListener("change", sincronizarDirecta);
+  precioInp.addEventListener("input", sincronizarDirecta);
+
+  // Comprobante obligatorio salvo en efectivo.
+  const actualizarReqComprobante = () => {
+    const obligatorio = medioSel.value !== "efectivo";
+    f.querySelector("#abono-req").hidden = !obligatorio;
+    f.querySelector("#abono-nota").textContent = obligatorio
+      ? "Obligatorio: el pago es por Yape o transferencia, adjunta la captura."
+      : "En efectivo no se pide comprobante.";
+  };
+  medioSel.addEventListener("change", actualizarReqComprobante);
+  actualizarReqComprobante();
+
   f.onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(f);
     const tipo = fd.get("tipo");
+    const dni = fd.get("dni").trim();
+    const telefono = fd.get("telefono").trim();
+    if (dni && !/^\d{8}$/.test(dni)) return formError(f, "El DNI debe tener exactamente 8 dígitos.");
+    if (!/^\d{9}$/.test(telefono)) return formError(f, "El teléfono debe tener exactamente 9 dígitos.");
+    const precio = Number(fd.get("precio_venta")) || 0;
+    if (!(precio > 0)) return formError(f, "El precio de venta debe ser mayor a 0.");
+    const monto = Number(fd.get("abono_monto")) || 0;
+    const medio = fd.get("abono_medio");
+    if (!(monto > 0)) return formError(f, "Registra el abono inicial: toda venta o separación nace con un primer abono.");
+    if (tipo === "separacion" && monto > precio + 0.005) {
+      return formError(f, `El abono inicial (${soles(monto)}) no puede superar el precio del tocador (${soles(precio)}).`);
+    }
+    if (tipo === "directa" && Math.abs(monto - precio) > 0.005) {
+      return formError(f, "En venta directa el abono inicial es el pago completo del tocador.");
+    }
+    const file = fileInp.files && fileInp.files[0];
+    if (medio !== "efectivo" && !(file && file.size > 0)) {
+      return formError(f, "El comprobante es obligatorio cuando el pago es por Yape o transferencia. Adjunta la foto o captura.");
+    }
     const row = {
       nombre: fd.get("nombre").trim(),
-      dni: fd.get("dni").trim(),
-      telefono: fd.get("telefono").trim(),
+      dni,
+      telefono,
       tipo,
       modelo: fd.get("modelo").trim(),
-      precio_venta: Number(fd.get("precio_venta")) || 0,
+      precio_venta: precio,
       fecha: fd.get("fecha"),
       destino_tipo: fd.get("destino_tipo"),
       destino_lugar: fd.get("destino_lugar").trim(),
@@ -470,14 +541,34 @@ function modalNuevaVenta() {
       costo: null,
     };
     if (ownerActivo() && fd.get("costo") !== "") row.costo = Number(fd.get("costo"));
+    const btn = f.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = "Guardando…";
     try {
       const creada = await S.db.ventas.create(row);
+      let comprobante = null;
+      if (file && file.size > 0) {
+        const dataUrl = await comprimirImagen(file);
+        comprobante = await S.db.storage.uploadAbono(dataUrl, creada.id, "tmp" + Date.now().toString(36));
+      }
+      await S.db.abonos.create({
+        venta_id: creada.id,
+        fecha: fd.get("abono_fecha"),
+        monto,
+        medio,
+        comprobante,
+      });
+      // Si la separación nació pagada por completo, su estado es "pagada".
+      const creadaFull = { ...row, id: creada.id };
+      await sincronizarEstadoPagada(creadaFull, monto);
       close();
-      toast(tipo === "directa" ? "Venta directa registrada" : "Separación registrada");
+      toast(tipo === "directa" ? "Venta directa registrada con su pago" : "Separación registrada con su abono inicial");
       S.ventaId = creada.id;
       render();
     } catch (err) {
       formError(f, "No se pudo guardar: " + err.message);
+      btn.disabled = false;
+      btn.textContent = "Guardar venta y abono";
     }
   };
 }
@@ -488,8 +579,8 @@ const modalEditarVenta = requiereDueno(async (venta) => {
     <h3>Editar venta / separación</h3>
     <label>Nombre del cliente <input name="nombre" required maxlength="120" value="${esc(venta.nombre)}" /></label>
     <div class="row3">
-      <label>DNI <input name="dni" maxlength="20" value="${esc(venta.dni)}" /></label>
-      <label>Teléfono <input name="telefono" required maxlength="30" value="${esc(venta.telefono)}" /></label>
+      <label>DNI (8 dígitos) <input name="dni" maxlength="8" inputmode="numeric" value="${esc(venta.dni)}" /></label>
+      <label>Teléfono (9 dígitos) <input name="telefono" required maxlength="9" inputmode="numeric" value="${esc(venta.telefono)}" /></label>
       <label>Fecha <input name="fecha" type="date" required value="${(venta.fecha || "").slice(0, 10)}" /></label>
     </div>
     <label>Modelo del tocador
@@ -514,9 +605,15 @@ const modalEditarVenta = requiereDueno(async (venta) => {
     </div>`;
   const close = openModal(f);
   f.querySelector("#cancel").onclick = close;
+  limitarDigitos(f.querySelector('input[name="dni"]'), 8);
+  limitarDigitos(f.querySelector('input[name="telefono"]'), 9);
   f.onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(f);
+    const dniEdit = fd.get("dni").trim();
+    const telEdit = fd.get("telefono").trim();
+    if (dniEdit && !/^\d{8}$/.test(dniEdit)) return formError(f, "El DNI debe tener exactamente 8 dígitos.");
+    if (!/^\d{9}$/.test(telEdit)) return formError(f, "El teléfono debe tener exactamente 9 dígitos.");
     const patch = {
       nombre: fd.get("nombre").trim(),
       dni: fd.get("dni").trim(),
