@@ -297,7 +297,15 @@ async function renderResumen() {
   }
 
   const vendidos = ventas.length;
-  const completados = ventas.filter((v) => v.estado === "pagada" || v.estado === "enviada").length;
+  // Completados por estado O por saldo: una separación pagada por completo
+  // cuenta como completada aunque su estado guardado aún diga "activa".
+  const abonadoPorVenta = {};
+  for (const v of ventas) {
+    abonadoPorVenta[v.id] = totalAbonado(await S.db.abonos.listByVenta(v.id));
+  }
+  const completados = ventas.filter(
+    (v) => v.estado === "pagada" || v.estado === "enviada" || saldoRestante(v, abonadoPorVenta[v.id]) <= 0
+  ).length;
   const enviados = ventas.filter((v) => v.estado === "enviada").length;
 
   const cards = el("div", { class: "cards" },
@@ -648,6 +656,7 @@ const modalEditarVenta = requiereDueno(async (venta) => {
   const f = el("form", { class: "form" });
   f.innerHTML = `
     <h3>Editar venta / separación</h3>
+    ${venta.estado === "anulada" ? `<div class="alert alert-warn">Esta separación está ANULADA (devolución registrada: ${soles(venta.devolucion_monto)}). Cambiar el precio o los datos puede descuadrar ese registro.</div>` : ""}
     <label>Nombre del cliente <input name="nombre" required maxlength="120" value="${esc(venta.nombre)}" /></label>
     <div class="row3">
       <label>DNI (8 dígitos) <input name="dni" maxlength="8" inputmode="numeric" value="${esc(venta.dni)}" /></label>
