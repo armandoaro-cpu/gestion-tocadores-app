@@ -8,7 +8,7 @@ import {
   soles, fmtFecha, hoyISO, rangoMes, rangoSemana, el, toast, openModal,
   formError, comprimirImagen, TIPOS_VENTA, ESTADOS, MEDIOS,
   CATEGORIAS_GASTO, totalAbonado, saldoRestante, porcentajeAvance,
-  enlaceWhatsApp, mensajeEstadoWhatsApp,
+  enlaceWhatsApp, mensajeEstadoWhatsApp, leerMontoComprobante,
 } from "./ui.js";
 import { exportarExcel } from "./export.js";
 
@@ -45,6 +45,76 @@ async function sincronizarEstadoPagada(v, abonado) {
     await S.db.ventas.update(v.id, { estado: correcto });
     v.estado = correcto;
   }
+}
+
+/* ------------- Comprobante: pegar / arrastrar / lector OCR -------------
+ * La imagen entra por archivo, pegado (Ctrl+V) o arrastrar y soltar.
+ * El lector SOLO sugiere el monto: jamás bloquea el guardado. */
+let comprobanteActivo = null; // { form, asignar } del formulario visible
+
+function conectarComprobante(form, fileInput, montoInput) {
+  const label = fileInput.closest("label");
+  if (label) label.classList.add("dropzone");
+  const preview = el("img", { class: "preview-img", alt: "Vista previa del comprobante", hidden: true });
+  const nota = el("p", { class: "ocr-note muted", hidden: true });
+  if (label) label.after(preview, nota);
+  let leido = null;
+  let leyendo = false;
+
+  const mostrarNota = (texto, clase) => {
+    nota.hidden = !texto;
+    nota.textContent = texto || "";
+    nota.className = "ocr-note " + (clase || "muted");
+  };
+  const revisarDiferencia = () => {
+    if (leido == null || leyendo) return;
+    const escrito = Number(montoInput.value) || 0;
+    if (escrito > 0 && Math.abs(escrito - leido) > 0.005) {
+      mostrarNota(`⚠ El comprobante leído dice ${soles(leido)}, pero el monto escrito es ${soles(escrito)}. Verifica antes de guardar.`, "ocr-warn");
+    } else if (escrito > 0) {
+      mostrarNota(`Monto leído del comprobante: ${soles(leido)}. Puedes corregirlo si hace falta.`, "ocr-ok");
+    }
+  };
+  montoInput.addEventListener("input", revisarDiferencia);
+
+  const procesar = async (file) => {
+    if (!file || !(file.type || "").startsWith("image/")) return;
+    try { preview.src = URL.createObjectURL(file); preview.hidden = false; } catch { /* sin vista previa */ }
+    if (leyendo) return;
+    leyendo = true;
+    mostrarNota("Leyendo el monto del comprobante…", "muted");
+    const monto = await leerMontoComprobante(file);
+    leyendo = false;
+    if (monto != null) {
+      leido = monto;
+      montoInput.value = monto;
+      montoInput.dispatchEvent(new Event("input", { bubbles: true }));
+      mostrarNota(`Monto leído del comprobante: ${soles(monto)}. Puedes corregirlo si hace falta.`, "ocr-ok");
+    } else {
+      mostrarNota("No se pudo leer el monto de esta imagen. Escríbelo como siempre: el guardado funciona igual.", "muted");
+    }
+  };
+  const asignar = (file) => {
+    if (!file) return;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      fileInput.files = dt.files;
+    } catch { /* algunos navegadores no dejan asignar: igual se procesa */ }
+    procesar(file);
+  };
+
+  fileInput.addEventListener("change", () => procesar(fileInput.files && fileInput.files[0]));
+  ["dragover", "dragenter"].forEach((ev) =>
+    form.addEventListener(ev, (e) => { e.preventDefault(); if (label) label.classList.add("drop-activa"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    form.addEventListener(ev, (e) => { e.preventDefault(); if (label) label.classList.remove("drop-activa"); }));
+  form.addEventListener("drop", (e) => {
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) asignar(file);
+  });
+  comprobanteActivo = { form, asignar };
+  return { procesar };
 }
 
 /* ---------------- Sesión ---------------- */
@@ -503,6 +573,7 @@ function modalNuevaVenta() {
   };
   medioSel.addEventListener("change", actualizarReqComprobante);
   actualizarReqComprobante();
+  conectarComprobante(f, fileInp, montoInp);
 
   f.onsubmit = async (e) => {
     e.preventDefault();
@@ -824,6 +895,7 @@ function formularioAbono(v, saldo) {
       : "En efectivo no se pide comprobante.";
   };
   fileInput.required = true;
+  conectarComprobante(f, fileInput, f.querySelector('input[name="monto"]'));
 
   f.onsubmit = async (e) => {
     e.preventDefault();
@@ -1080,6 +1152,22 @@ async function iniciar() {
   S.db = db;
   S.supabase = supabase;
   mostrarLogin();
+
+  // Pegar una captura (Ctrl+V) la manda al formulario de abono visible.
+  document.addEventListener("paste", (e) => {
+    if (!comprobanteActivo || !comprobanteActivo.form.isConnected) return;
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const item of items) {
+      if (item.type && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          comprobanteActivo.asignar(file);
+        }
+        break;
+      }
+    }
+  });
 
   const sesion = leerSesion();
   if (sesion) {

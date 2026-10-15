@@ -43,3 +43,9 @@ gestion_tocadores_app/
 6. Probar el login, crear la contraseña de dueño desde la app y verificar que los datos se ven igual en celular y computadora.
 
 > Nota de seguridad: el bucket `comprobantes` se crea público para simplificar la prueba. En producción se recomienda cambiarlo a privado y usar URLs firmadas.
+
+## Lector de comprobantes (OCR) y entrada de imágenes
+
+- El campo de comprobante acepta la imagen por **archivo**, **pegado (Ctrl+V)** o **arrastrar y soltar** (en computadora). En celular se elige de la galería como siempre. La imagen guardada es siempre la captura completa.
+- Al subirla, un lector (Tesseract.js por CDN) intenta leer **solo el monto** y lo sugiere en el campo: para transferencias busca el monto con decimales junto a "S/"; para Yape lee la zona de los dígitos. Es una **sugerencia**: la persona puede corregirla o escribir el monto a mano, y si lo escrito difiere de lo leído, la app muestra un aviso (sin bloquear el guardado).
+- La primera lectura descarga el lector e idioma desde internet (puede tardar unos segundos); sin conexión, simplemente se escribe el monto como siempre.

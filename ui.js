@@ -193,3 +193,100 @@ export function mensajeEstadoWhatsApp(venta, abonado) {
   ];
   return lineas.join("\n");
 }
+
+/* ================================================================
+ * Lector de comprobantes (OCR con Tesseract.js, vía CDN).
+ * SOLO SUGIERE el monto: la persona siempre puede escribirlo o
+ * corregirlo a mano, y el guardado nunca depende de la lectura.
+ * Estrategias (probadas con capturas reales de Yape/BCP/BBVA-Plin):
+ *  1) Transferencias: monto con decimales anclado a "S/" en el texto.
+ *  2) Yape: sus montos son enteros gigantes; se lee solo la zona de
+ *     los dígitos (sin el símbolo) en modo "palabra única".
+ * ================================================================ */
+
+/** Extrae el monto con decimales de un texto OCR: el mayor "S/ X.XX" (la S puede leerse como 5). */
+export function extraerMontoDecimal(texto) {
+  const candidatos = [...String(texto || "").matchAll(/[S5s]\s*\/\s*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{2})/g)]
+    .map((m) => {
+      let raw = m[1];
+      if (raw.includes(".") && raw.includes(",")) raw = raw.replace(/,/g, "");
+      else if (raw.includes(",")) raw = raw.replace(",", ".");
+      return parseFloat(raw);
+    })
+    .filter((n) => !Number.isNaN(n) && n > 0);
+  return candidatos.length ? Math.max(...candidatos) : null;
+}
+
+/** Extrae un entero de la zona de dígitos (caso Yape): primer número razonable del texto. */
+export function extraerEnteroZona(texto) {
+  const m = String(texto || "").match(/\d{1,3}(?:[.,]\d{3})+|\d{1,6}/);
+  if (!m) return null;
+  const n = parseInt(m[0].replace(/[.,]/g, ""), 10);
+  return n > 0 && n <= 999999 ? n : null;
+}
+
+/** Recorta la franja de los dígitos del monto (zona tipo Yape) y la prepara en blanco/negro. */
+async function recorteZonaDigitos(url) {
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = rej;
+    i.src = url;
+  });
+  const sx = img.naturalWidth * 0.10;
+  const sy = img.naturalHeight * 0.26;
+  const sw = img.naturalWidth * 0.50;
+  const sh = img.naturalHeight * 0.16;
+  const escala = 3;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sw * escala));
+  canvas.height = Math.max(1, Math.round(sh * escala));
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const datos = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = datos.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const gris = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    const v = gris > 165 ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(datos, 0, 0);
+  return new Promise((res) => canvas.toBlob(res, "image/png"));
+}
+
+/**
+ * Intenta leer el monto de la imagen del comprobante.
+ * Devuelve el monto (número) o null si no se pudo leer. Nunca lanza por lectura fallida.
+ */
+export async function leerMontoComprobante(file) {
+  if (typeof window === "undefined" || !window.Tesseract || !file) return null;
+  let url = null;
+  let worker = null;
+  try {
+    url = URL.createObjectURL(file);
+    worker = await window.Tesseract.createWorker("spa");
+    await worker.setParameters({ tessedit_pageseg_mode: "11" });
+    const completo = await worker.recognize(url);
+    const textoCompleto = completo?.data?.text || "";
+    const decimal = extraerMontoDecimal(textoCompleto);
+    if (decimal != null) return decimal;
+    // Solo si parece de Yape se intenta la zona de dígitos enteros.
+    if (/yape/i.test(textoCompleto)) {
+      const zona = await recorteZonaDigitos(url);
+      if (zona) {
+        await worker.setParameters({
+          tessedit_pageseg_mode: "8",
+          tessedit_char_whitelist: "0123456789.,",
+        });
+        const lectura = await worker.recognize(zona);
+        return extraerEnteroZona(lectura?.data?.text || "");
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (worker) { try { await worker.terminate(); } catch { /* sin efecto */ } }
+    if (url) { try { URL.revokeObjectURL(url); } catch { /* sin efecto */ } }
+  }
+}
