@@ -291,6 +291,8 @@ function card(label, value, sub) {
 
 /* ---------------- VENTAS (lista + buscador) ---------------- */
 
+let ventasToken = 0;
+
 async function renderVentas() {
   if (S.ventaId) return renderVentaDetalle(S.ventaId);
 
@@ -301,33 +303,30 @@ async function renderVentas() {
   );
   wrap.append(header);
 
-  const searchRow = el("div", { class: "search-row" },
-    el("input", {
-      type: "search", placeholder: "Buscar por nombre, teléfono o DNI…",
-      value: S.busqueda, class: "search-input",
-      oninput: (e) => { S.busqueda = e.target.value; renderVentas(); },
-    }),
-    el("select", { onchange: (e) => { S.filtroEstado = e.target.value; renderVentas(); } },
-      el("option", { value: "" }, "Todos los estados"),
-      ...Object.entries(ESTADOS).map(([k, v]) => el("option", { value: k, selected: S.filtroEstado === k ? true : null }, v))
-    )
-  );
-  wrap.append(searchRow);
+  const resultados = el("div", { class: "ventas-resultados" });
 
-  const todas = await S.db.ventas.list();
-  const q = norm(S.busqueda);
-  const filtradas = todas.filter((v) => {
-    if (S.filtroEstado && v.estado !== S.filtroEstado) return false;
-    if (!q) return true;
-    return [v.nombre, v.telefono, v.dni].some((x) => norm(x).includes(q));
-  });
+  // Solo se repinta la LISTA al buscar/filtrar (no toda la pantalla),
+  // para no duplicar la vista ni perder el foco del buscador.
+  const pintarResultados = async () => {
+    const token = ++ventasToken;
+    const todas = await S.db.ventas.list();
+    if (token !== ventasToken) return; // ya hay una búsqueda más nueva en curso
+    const q = norm(S.busqueda);
+    const filtradas = todas.filter((v) => {
+      if (S.filtroEstado && v.estado !== S.filtroEstado) return false;
+      if (!q) return true;
+      return [v.nombre, v.telefono, v.dni].some((x) => norm(x).includes(q));
+    });
 
-  if (!filtradas.length) {
-    wrap.append(el("p", { class: "muted", text: "No hay registros. Toca «+ Nueva» para registrar la primera venta o separación." }));
-  } else {
+    resultados.innerHTML = "";
+    if (!filtradas.length) {
+      resultados.append(el("p", { class: "muted", text: "No hay registros. Toca «+ Nueva» para registrar la primera venta o separación." }));
+      return;
+    }
     const ul = el("ul", { class: "list list-cards" });
     for (const v of filtradas) {
       const abs = await S.db.abonos.listByVenta(v.id);
+      if (token !== ventasToken) return;
       const ab = totalAbonado(abs);
       const saldo = saldoRestante(v, ab);
       const waLink = enlaceWhatsApp(v.telefono);
@@ -345,9 +344,24 @@ async function renderVentas() {
           : null
       ));
     }
-    wrap.append(ul);
-  }
+    resultados.append(ul);
+  };
+
+  const searchRow = el("div", { class: "search-row" },
+    el("input", {
+      type: "search", placeholder: "Buscar por nombre, teléfono o DNI…",
+      value: S.busqueda, class: "search-input",
+      oninput: (e) => { S.busqueda = e.target.value; pintarResultados(); },
+    }),
+    el("select", { onchange: (e) => { S.filtroEstado = e.target.value; pintarResultados(); } },
+      el("option", { value: "" }, "Todos los estados"),
+      ...Object.entries(ESTADOS).map(([k, v]) => el("option", { value: k, selected: S.filtroEstado === k ? true : null }, v))
+    )
+  );
+  wrap.append(searchRow);
+  wrap.append(resultados);
   view().append(wrap);
+  pintarResultados();
 }
 
 /* ---------------- Nueva / editar venta ---------------- */
