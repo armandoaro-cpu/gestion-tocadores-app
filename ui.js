@@ -225,32 +225,126 @@ export function extraerEnteroZona(texto) {
   return n > 0 && n <= 999999 ? n : null;
 }
 
-/** Recorta una franja relativa de la imagen y la prepara en blanco/negro ampliada. */
-async function recorteFranja(url, x, y, w, h, escala) {
-  const img = await new Promise((res, rej) => {
+function cargarImagen(src) {
+  return new Promise((res, rej) => {
     const i = new Image();
     i.onload = () => res(i);
     i.onerror = rej;
-    i.src = url;
+    i.src = src;
   });
-  const sx = img.naturalWidth * x;
-  const sy = img.naturalHeight * y;
-  const sw = img.naturalWidth * w;
-  const sh = img.naturalHeight * h;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(sw * escala));
-  canvas.height = Math.max(1, Math.round(sh * escala));
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  const datos = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = datos.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const gris = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    const v = gris > 165 ? 255 : 0;
-    d[i] = d[i + 1] = d[i + 2] = v;
+}
+
+/** Recorta una franja relativa de la imagen y la prepara en blanco/negro ampliada. */
+async function recorteFranja(origen, x, y, w, h, escala) {
+  const esTexto = typeof origen === "string";
+  const url = esTexto ? origen : URL.createObjectURL(origen);
+  try {
+    const img = await cargarImagen(url);
+    const sx = img.naturalWidth * x;
+    const sy = img.naturalHeight * y;
+    const sw = img.naturalWidth * w;
+    const sh = img.naturalHeight * h;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(sw * escala));
+    canvas.height = Math.max(1, Math.round(sh * escala));
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const datos = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = datos.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const gris = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const v = gris > 165 ? 255 : 0;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(datos, 0, 0);
+    return await new Promise((res) => canvas.toBlob(res, "image/png"));
+  } finally {
+    if (!esTexto) { try { URL.revokeObjectURL(url); } catch { /* sin efecto */ } }
   }
-  ctx.putImageData(datos, 0, 0);
-  return new Promise((res) => canvas.toBlob(res, "image/png"));
+}
+
+/* ---------- Motor OCR compartido (clave en el celular) ----------
+ * El lector se crea UNA sola vez y se reutiliza en todas las lecturas
+ * de la sesión. Antes se creaba y destruía en cada lectura: en el
+ * celular eso significaba descargar y arrancar el motor (varios MB)
+ * una y otra vez, y la lectura tardaba muchísimo o moría en el camino. */
+let ocrWorkerPromise = null;
+let ocrProgreso = null; // callback de progreso de la lectura en curso
+
+function textoProgreso(m) {
+  if (!m || !m.status) return null;
+  const s = String(m.status);
+  const pct = typeof m.progress === "number" ? Math.round(m.progress * 100) : null;
+  if (s.includes("loading tesseract core")) return "Descargando el lector… (solo la primera vez)";
+  if (s.includes("loading language")) return "Descargando el idioma del lector… (solo la primera vez)";
+  if (s.includes("initializing")) return "Preparando el lector…";
+  if (s.includes("recognizing")) return pct != null && pct > 0 ? `Analizando el comprobante… ${pct}%` : "Analizando el comprobante…";
+  return null;
+}
+
+function obtenerWorkerOCR() {
+  if (!ocrWorkerPromise) {
+    const logger = (m) => {
+      if (!ocrProgreso) return;
+      const t = textoProgreso(m);
+      if (t) { try { ocrProgreso(t); } catch { /* sin efecto */ } }
+    };
+    ocrWorkerPromise = (async () => {
+      try {
+        return await window.Tesseract.createWorker("spa", 1, { logger });
+      } catch {
+        return await window.Tesseract.createWorker("spa");
+      }
+    })();
+    // Si la creación falla (p. ej. sin internet), se olvida para reintentar luego.
+    ocrWorkerPromise.catch(() => { ocrWorkerPromise = null; });
+  }
+  return ocrWorkerPromise;
+}
+
+function reiniciarWorkerOCR() {
+  const p = ocrWorkerPromise;
+  ocrWorkerPromise = null;
+  if (p) p.then((w) => { if (w && w.terminate) return w.terminate(); }).catch(() => {});
+}
+
+/** Empieza a descargar y preparar el lector en segundo plano. */
+export function calentarLectorOCR() {
+  if (typeof window === "undefined" || !window.Tesseract) return;
+  obtenerWorkerOCR().catch(() => {});
+}
+
+/**
+ * Copia reducida de la imagen para el lector: máximo 1000 px de ancho.
+ * Las capturas y fotos del celular son enormes (3000-4000 px) y leerlas
+ * a tamaño completo en un teléfono es lentísimo o agota la memoria;
+ * las zonas de lectura son relativas, así que nada se pierde.
+ */
+async function prepararImagenOCR(file) {
+  let url = null;
+  try {
+    url = URL.createObjectURL(file);
+  } catch {
+    // Navegador sin URL de objeto: el lector puede trabajar con el archivo.
+    return { src: file, urlTemporal: null };
+  }
+  try {
+    const img = await cargarImagen(url);
+    const MAX = 1000;
+    if (!img.naturalWidth || img.naturalWidth <= MAX) return { src: url, urlTemporal: url };
+    const escala = MAX / img.naturalWidth;
+    const canvas = document.createElement("canvas");
+    canvas.width = MAX;
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * escala));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { src: url, urlTemporal: url };
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+    if (!blob) return { src: url, urlTemporal: url };
+    return { src: blob, urlTemporal: url };
+  } catch {
+    return { src: url, urlTemporal: url };
+  }
 }
 
 /**
@@ -261,43 +355,60 @@ async function recorteFranja(url, x, y, w, h, escala) {
  *  3) Si parece Yape: dos recortes distintos de SOLO los dígitos deben
  *     coincidir; si no coinciden, no se sugiere nada (un monto dudoso es
  *     peor que ninguno: la persona lo escribe a mano).
- * Devuelve el monto (número) o null. Nunca lanza por lectura fallida.
+ * `alProgreso(texto)` (opcional) recibe el avance para mostrarlo en pantalla.
+ * Tiempo límite total: 60 s. Devuelve el monto (número) o null.
+ * Nunca lanza por lectura fallida.
  */
-export async function leerMontoComprobante(file) {
+export async function leerMontoComprobante(file, alProgreso) {
   if (typeof window === "undefined" || !window.Tesseract || !file) return null;
-  let url = null;
-  let worker = null;
-  try {
-    url = URL.createObjectURL(file);
-    worker = await window.Tesseract.createWorker("spa");
-    const leer = async (imagen, psm, whitelist) => {
-      const params = { tessedit_pageseg_mode: psm };
-      if (whitelist) params.tessedit_char_whitelist = whitelist;
-      await worker.setParameters(params);
-      const r = await worker.recognize(imagen);
-      return r?.data?.text || "";
-    };
-    const textoCompleto = await leer(url, "11", null);
-    const decimal = extraerMontoDecimal(textoCompleto);
-    if (decimal != null) return decimal;
-    const banda = await recorteFranja(url, 0.04, 0.14, 0.92, 0.38, 2);
-    if (banda) {
-      const decimalBanda = extraerMontoDecimal(await leer(banda, "6", null));
-      if (decimalBanda != null) return decimalBanda;
+  const trabajo = (async () => {
+    const prep = await prepararImagenOCR(file);
+    try {
+      const worker = await obtenerWorkerOCR();
+      ocrProgreso = typeof alProgreso === "function" ? alProgreso : null;
+      const leer = async (imagen, psm, whitelist) => {
+        const params = { tessedit_pageseg_mode: psm };
+        if (whitelist) params.tessedit_char_whitelist = whitelist;
+        await worker.setParameters(params);
+        const r = await worker.recognize(imagen);
+        return r?.data?.text || "";
+      };
+      const textoCompleto = await leer(prep.src, "11", null);
+      const decimal = extraerMontoDecimal(textoCompleto);
+      if (decimal != null) return decimal;
+      const banda = await recorteFranja(prep.src, 0.04, 0.14, 0.92, 0.38, 2);
+      if (banda) {
+        const decimalBanda = extraerMontoDecimal(await leer(banda, "6", null));
+        if (decimalBanda != null) return decimalBanda;
+      }
+      if (/yape/i.test(textoCompleto)) {
+        const zonaA = await recorteFranja(prep.src, 0.125, 0.28, 0.42, 0.12, 3);
+        const intA = zonaA ? extraerEnteroZona(await leer(zonaA, "8", "0123456789.,")) : null;
+        const zonaB = await recorteFranja(prep.src, 0.14, 0.29, 0.38, 0.10, 3);
+        const intB = zonaB ? extraerEnteroZona(await leer(zonaB, "7", "0123456789.,")) : null;
+        if (intA != null && intA === intB) return intA;
+        return null;
+      }
+      return null;
+    } finally {
+      ocrProgreso = null;
+      if (prep.urlTemporal) { try { URL.revokeObjectURL(prep.urlTemporal); } catch { /* sin efecto */ } }
     }
-    if (/yape/i.test(textoCompleto)) {
-      const zonaA = await recorteFranja(url, 0.125, 0.28, 0.42, 0.12, 3);
-      const intA = zonaA ? extraerEnteroZona(await leer(zonaA, "8", "0123456789.,")) : null;
-      const zonaB = await recorteFranja(url, 0.14, 0.29, 0.38, 0.10, 3);
-      const intB = zonaB ? extraerEnteroZona(await leer(zonaB, "7", "0123456789.,")) : null;
-      if (intA != null && intA === intB) return intA;
+  })();
+  let temporizador = null;
+  const limite = new Promise((res) => { temporizador = setTimeout(() => res("__timeout__"), 60000); });
+  try {
+    const r = await Promise.race([trabajo, limite]);
+    if (r === "__timeout__") {
+      reiniciarWorkerOCR();
+      trabajo.catch(() => {});
       return null;
     }
-    return null;
+    return r;
   } catch {
+    reiniciarWorkerOCR();
     return null;
   } finally {
-    if (worker) { try { await worker.terminate(); } catch { /* sin efecto */ } }
-    if (url) { try { URL.revokeObjectURL(url); } catch { /* sin efecto */ } }
+    clearTimeout(temporizador);
   }
 }

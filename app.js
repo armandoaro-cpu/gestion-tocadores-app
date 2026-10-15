@@ -8,7 +8,7 @@ import {
   soles, fmtFecha, hoyISO, rangoMes, rangoSemana, el, toast, openModal,
   formError, comprimirImagen, TIPOS_VENTA, ESTADOS, MEDIOS,
   CATEGORIAS_GASTO, totalAbonado, saldoRestante, porcentajeAvance,
-  enlaceWhatsApp, mensajeEstadoWhatsApp, leerMontoComprobante,
+  enlaceWhatsApp, mensajeEstadoWhatsApp, leerMontoComprobante, calentarLectorOCR,
 } from "./ui.js";
 import { exportarExcel } from "./export.js";
 
@@ -83,7 +83,7 @@ function conectarComprobante(form, fileInput, montoInput) {
     if (leyendo) return;
     leyendo = true;
     mostrarNota("Leyendo el monto del comprobante…", "muted");
-    const monto = await leerMontoComprobante(file);
+    const monto = await leerMontoComprobante(file, (t) => mostrarNota(t, "muted"));
     leyendo = false;
     if (monto != null) {
       leido = monto;
@@ -114,6 +114,9 @@ function conectarComprobante(form, fileInput, montoInput) {
     if (file) asignar(file);
   });
   comprobanteActivo = { form, asignar };
+  // El lector se va preparando en segundo plano mientras se llena el
+  // formulario: cuando se elige la imagen, ya está listo (clave en celular).
+  calentarLectorOCR();
   return { procesar };
 }
 
