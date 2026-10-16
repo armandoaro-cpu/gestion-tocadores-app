@@ -367,8 +367,11 @@ export async function leerMontoComprobante(file, alProgreso) {
       const worker = await obtenerWorkerOCR();
       ocrProgreso = typeof alProgreso === "function" ? alProgreso : null;
       const leer = async (imagen, psm, whitelist) => {
-        const params = { tessedit_pageseg_mode: psm };
-        if (whitelist) params.tessedit_char_whitelist = whitelist;
+        // La lista de caracteres se fija SIEMPRE (vacía = sin restricción):
+        // el motor es compartido y, si la zona de dígitos de un Yape deja
+        // su lista activa, la siguiente lectura sale solo con números y
+        // las transferencias dejan de leerse. (Fallo del v9, corregido.)
+        const params = { tessedit_pageseg_mode: psm, tessedit_char_whitelist: whitelist || "" };
         await worker.setParameters(params);
         const r = await worker.recognize(imagen);
         return r?.data?.text || "";
